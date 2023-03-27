@@ -2,7 +2,7 @@ import os
 import requests
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from general_utils import get_optimal_worker_count
+from cllm_data_curation.thestack_curation.general_utils import get_optimal_worker_count
 
 
 def git_lfs_check(install_style="brew"):
@@ -135,3 +135,12 @@ def requests_parallel_download(url_list, root_output_dir, auth_token=None, num_w
         tasks = [executor.submit(requests_download, url, root_output_dir, auth_token) for url in url_list]
         for task in tasks:
             task.result()
+
+
+def get_dataset_urls_from_hf(stack_version, auth_token, output_path):
+    """ Get the URLs of the files in the specified Stack dataset version from HuggingFace """
+    from datasets import load_dataset_builder
+    import pandas as pd
+    dbuilder = load_dataset_builder(os.path.join('bigcode', stack_version), use_auth_token=auth_token)
+    pd.Series(dbuilder.config.data_files).to_csv(output_path, index=False)
+

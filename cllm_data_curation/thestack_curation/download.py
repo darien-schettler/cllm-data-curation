@@ -1,12 +1,13 @@
 import os
 import datasets
 import argparse
-from download_utils import git_lfs_check
-from download_utils import clone_git_repo
-from general_utils import get_abs_pwd_path
-from general_utils import authenticate_hf
-from general_utils import read_csv_urls
-from download_utils import requests_parallel_download
+
+from cllm_data_curation.thestack_curation.download_utils import git_lfs_check
+from cllm_data_curation.thestack_curation.download_utils import clone_git_repo
+from cllm_data_curation.thestack_curation.general_utils import get_abs_pwd_path
+from cllm_data_curation.thestack_curation.general_utils import authenticate_hf
+from cllm_data_curation.thestack_curation.general_utils import read_csv_urls
+from cllm_data_curation.thestack_curation.download_utils import requests_parallel_download
 
 
 def download_thestack(output_dir, hf_token, stack_version="the-stack-dedup", method="git_lfs"):
