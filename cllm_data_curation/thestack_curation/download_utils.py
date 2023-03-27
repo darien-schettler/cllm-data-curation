@@ -2,7 +2,7 @@ import os
 import requests
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from cllm_data_curation.thestack_curation.general_utils import get_optimal_worker_count
+from general_utils import get_optimal_worker_count
 
 
 def git_lfs_check(install_style="brew"):
@@ -21,10 +21,12 @@ def git_lfs_check(install_style="brew"):
 
         # Install Git LFS using Homebrew on macOS
         if "brew" in install_style:
-            subprocess.call(
-                ['/usr/bin/ruby', '-e',
-                 '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)'])
+            # subprocess.call(
+            #     'ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"',
+            #     shell=True
+            # )
             subprocess.call(['brew', 'install', 'git-lfs'])
+            subprocess.call(['git', 'lfs', 'install'])
         # Install Git LFS using apt-get on Ubuntu or Debian
         else:
             # Install Git LFS using apt-get on Ubuntu or Debian

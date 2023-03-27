@@ -1,12 +1,12 @@
 import os
 import datasets
 import argparse
-from cllm_data_curation.thestack_curation.download_utils import git_lfs_check
-from cllm_data_curation.thestack_curation.download_utils import clone_git_repo
-from cllm_data_curation.thestack_curation.general_utils import get_abs_pwd_path
-from cllm_data_curation.thestack_curation.general_utils import authenticate_hf
-from cllm_data_curation.thestack_curation.general_utils import read_csv_urls
-from cllm_data_curation.thestack_curation.download_utils import requests_parallel_download
+from download_utils import git_lfs_check
+from download_utils import clone_git_repo
+from general_utils import get_abs_pwd_path
+from general_utils import authenticate_hf
+from general_utils import read_csv_urls
+from download_utils import requests_parallel_download
 
 
 def download_thestack(output_dir, hf_token, stack_version="the-stack-dedup", method="git_lfs"):
@@ -25,7 +25,7 @@ def download_thestack(output_dir, hf_token, stack_version="the-stack-dedup", met
 
     """
     # Authenticate with HuggingFace
-    authenticate_hf(hf_token=hf_token)
+    authenticate_hf(hf_token=hf_token, auth_git=True if 'git' in method.lower() else False)
 
     # Check if the specified stack version is implemented
     if stack_version not in ["the-stack-dedup", "the-stack"]:
@@ -38,10 +38,10 @@ def download_thestack(output_dir, hf_token, stack_version="the-stack-dedup", met
         url_list = read_csv_urls(
             os.path.join(get_abs_pwd_path(), "supplementary_data", f"{stack_version.replace('-', '_')}_urls.csv")
         )
-        requests_parallel_download(url_list, root_output_dir=output_dir)
+        requests_parallel_download(url_list, root_output_dir=output_dir, auth_token=hf_token)
     elif method.lower() in ["hf", "huggingface"]:
         print("\n... THIS ISN'T WORKING AND USUALLY FAILS ...\n")
-        datasets.load_dataset(stack_version, split="train", cache_dir=output_dir)
+        datasets.load_dataset(os.path.join("bigcode", stack_version), split="train", cache_dir=output_dir)
     else:
         raise NotImplementedError(f"method={method} not implemented")
 
@@ -53,7 +53,7 @@ def main():
 
     # Where to download the dataset to (note you should have at least 1TB of free disk space)
     parser.add_argument(
-        "output_dir",
+        "--output_dir",
         help="The output directory where the dataset will be downloaded."
     )
 
@@ -62,7 +62,7 @@ def main():
     #        and accept the terms & conditions before you can
     #        download the dataset.
     parser.add_argument(
-        "hf_token",
+        "--hf_token",
         help="The HuggingFace token to use for authentication."
     )
 

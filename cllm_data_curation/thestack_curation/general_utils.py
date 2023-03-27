@@ -3,7 +3,7 @@ import csv
 import subprocess
 
 
-def authenticate_hf(hf_token):
+def authenticate_hf(hf_token, auth_git=False):
     """ Authenticate with HuggingFace using the specified token. """
 
     # If this fails you may need to install huggingface_hub
@@ -13,7 +13,14 @@ def authenticate_hf(hf_token):
     # `export PATH="/Users/<user>/Library/Python/<python-version>/bin/:$PATH"`
     #
     # I guess my bin directory wasn't in my PATH for some reason
-    subprocess.call(["huggingface-cli", "login", "--token", hf_token])
+    sp_call = ["huggingface-cli", "login", "--token", hf_token]
+
+    # If you want to authenticate with Git as well
+    if auth_git:
+        sp_call += ["--add-to-git-credential"]
+
+    # Run the subprocess call
+    subprocess.call(sp_call)
 
 
 def get_optimal_worker_count(worker_factor=1, fallback_n_workers=4):
