@@ -4,9 +4,60 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import re
 
 # So we can see progress bars
 tqdm.pandas()
+
+
+def make_meta_df(root_dir):
+    """ Make a DataFrame containing metadata about the Parquet files in the specified directory.
+
+    Args:
+        root_dir (str): The path to the root directory containing the Parquet files.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing metadata about the Parquet files in the specified directory.
+    """
+    all_pq_paths = glob_pq_paths(root_dir)
+    meta_df = pd.DataFrame({"pq_path": all_pq_paths})
+    meta_df["lang"] = meta_df.pq_path.apply(lambda x: x.rsplit("/", 2)[-2])
+    lsizes = meta_df.groupby("lang")["pq_path"].first().apply(lambda x: get_dir_size(os.path.dirname(x))).to_dict()
+    meta_df["lang_size_mb"] = meta_df["lang"].map(lsizes)
+    lcnts = meta_df.groupby("lang")["pq_path"].first().apply(lambda x: len(os.listdir(os.path.dirname(x)))).to_dict()
+    meta_df["lang_file_cnt"] = meta_df["lang"].map(lcnts)
+    return meta_df
+
+
+def filter_meta_languages(meta_df, top_k=None, mb_size_thresh=None, pq_file_cnt_thresh=None, bad_langs=(".csv",)):
+    """ Filter the DataFrame containing metadata about the Parquet files in the specified directory.
+
+    Args:
+        meta_df (pd.DataFrame):
+            – The DataFrame containing metadata about the Parquet files in the specified directory.
+        top_k (int, optional):
+            – The number of languages to keep.
+              If specified, this will override `mb_size_thresh` and `pq_file_cnt_thresh`.
+        mb_size_thresh (float, optional):
+            – The minimum size of the language in megabytes.
+            – If specified, this will override `pq_file_cnt_thresh`.
+        pq_file_cnt_thresh (int, optional):
+            – The minimum number of Parquet files in the language.
+        bad_langs (tuple, optional):
+            – A tuple of languages to exclude from the DataFrame no matter what.
+            – This is useful for filtering out languages that are not actually languages (e.g. ".csv").
+
+    Returns:
+        pd.DataFrame: A DataFrame containing metadata about the Parquet files in the specified directory.
+    """
+    if top_k:
+        top_langs = meta_df.groupby("lang")["lang_size_mb"].sum().sort_values(ascending=False).index[:top_k]
+        meta_df = meta_df[meta_df.lang.isin(top_langs)]
+    elif mb_size_thresh:
+        meta_df = meta_df[meta_df.lang_size_mb > mb_size_thresh]
+    elif pq_file_cnt_thresh:
+        meta_df = meta_df[meta_df.lang_file_cnt >= pq_file_cnt_thresh]
+    return meta_df[~meta_df.lang.isin(bad_langs)].reset_index(drop=True)
 
 
 def filter_parquet_file(pq_path, output_dir,
@@ -51,7 +102,7 @@ def filter_parquet_file(pq_path, output_dir,
     print(f"\t--> AFTER MIN FILE-SIZE REDUX: {len(_df)}")
 
     # Step 4 - Filter out rows/files that have a size greater than `max_size_kbs`
-    _df = _df[_df.file_size//(1024**2) <= max_size_kbs]
+    _df = _df[_df.file_size // (1024 ** 2) <= max_size_kbs]
     print(f"\t--> AFTER {max_size_kbs:,} KB MAX SIZE REDUX: {len(_df)}")
 
     # Step 5 - Filter out rows/files that have an alphanumeric fraction that
@@ -168,6 +219,7 @@ def read_json_file(file_path):
 
 def glob_pq_paths(root_dir):
     """ Get all Parquet file paths in a directory. """
+
     def __check_capture(_path_list, _thresh=2):
         if len(_path_list) > _thresh:
             return True
@@ -178,7 +230,7 @@ def glob_pq_paths(root_dir):
         if __check_capture(pq_paths):
             return pq_paths
     else:
-        raise FileNotFoundError(f"\nNo Parquet files found in {root_dir} based on pattern checks (see below)\n" 
+        raise FileNotFoundError(f"\nNo Parquet files found in {root_dir} based on pattern checks (see below)\n"
                                 f"PATTERN CHECKS:  {pattern_checks}")
 
 
@@ -209,13 +261,48 @@ def get_dir_size(path, unit='MB'):
                 total_size += os.path.getsize(file_path)
 
     # Convert the size based on the specified unit
-    if unit == 'B':
+    if unit.upper() == 'B':
         return total_size
-    elif unit == 'KB':
+    elif unit.upper() == 'KB':
         return total_size / 1024
-    elif unit == 'MB':
+    elif unit.upper() == 'MB':
         return total_size / (1024 ** 2)
-    elif unit == 'GB':
+    elif unit.upper() == 'GB':
         return total_size / (1024 ** 3)
     else:
         raise ValueError(f"Invalid unit '{unit}'. Accepted units are one of ['B', 'KB', 'MB', 'GB']")
+
+
+def replace_byte_encoded_string(input_string, min_length=100, replacement_token="<BYTE_ENCODED_STRING>"):
+    """ Replace a byte-encoded string with a token. """
+    # Pre-compile the pattern for better performance
+    #    --> the following pattern matches a byte-encoded string of at least `min_length`
+    pattern = re.compile(fr"b'([^\x00-\x7F]{{{min_length},}})'")
+
+    # Replace the byte-encoded string with the replacement token
+    replaced_string = pattern.sub(replacement_token, input_string)
+
+    return replaced_string
+
+
+def contains_repeating_substring(input_string, substring, n):
+    """ Check if a string contains a substring that repeats at least n times. """
+    # Escape the substring to prevent regex errors and build the pattern
+    pattern = f"({re.escape(substring)}){{{n},}}"
+
+    # Check if the pattern is found in the input string and return flag
+    return bool(re.search(pattern, input_string))
+
+
+####################################################################################################
+# TODO - Create a function that allows us to visualize the filtered files and
+#        explains why the files were filtered out in the first place
+####################################################################################################
+# def print_demo_omits(lang, n_demo_samples=10, max_print_ln=5000):
+#     print(f"\n{'='*100}\n\t\t\t{n_demo_samples} DEMO EXMAPLES FOR LANGUAGE --> {lang} \n{'='*100}\n")
+#     paths = lang_to_example_map[lang]
+#     orig_path = paths["full_pq_path"]
+#     slim_v1_path = paths["clean_pq_path"]
+#     _orig_df = open_pq_as_df(orig_path)
+#     _slim_v1_df = open_pq_as_df(slim_v1_path, is_slim=True)
+####################################################################################################
