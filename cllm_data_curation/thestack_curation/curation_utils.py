@@ -62,110 +62,100 @@ def filter_meta_languages(meta_df, top_k=None, mb_size_thresh=None, pq_file_cnt_
 
 
 def filter_parquet_file(pq_path, output_dir,
-                        max_ll=600, min_len=50, min_max_ll=25, max_size_kbs=1_000,
-                        min_alphanum=0.001, max_alphanum=0.975, min_ave_ll=16, min_lines=3, is_slim=True):
-    """ Filter a Parquet file by line-length, file-size, number of lines, and alphanumerical fraction.
+                        max_ll=600, min_len=50, min_max_ll=25, max_size_kbs=1_000, keep_original_index=True,
+                        min_alphanum=0.001, max_alphanum=0.975, min_ave_ll=16, min_lines=3, is_slim=True, **kwargs):
+    """Filter a Parquet file by applying multiple criteria such as line length, file size,
+    number of lines, and alphanumerical fraction.
 
     Args:
-        pq_path (str): The path to the Parquet file to filter.
-        output_dir (str): The directory to save the filtered Parquet file.
-        max_ll (int, optional): The maximum allowed line length.
-        min_len (int, optional): The minimum allowed file size.
-        min_max_ll (int, optional): The minimum allowed maximum line length.
-        max_size_kbs (int, optional): The maximum allowed file size in kbs.
-        min_alphanum (float, optional): The minimum allowed alphanumerical fraction.
-        max_alphanum (float, optional): The maximum allowed alphanumerical fraction.
-        min_ave_ll (int, optional): The minimum allowed average line length.
-        min_lines (int, optional): The minimum allowed number of lines.
-        is_slim (bool, optional): Whether to apply slim filtering or not.
+        pq_path (str): Path to the input Parquet file.
+            - NOTE: This is expected to be in the form: .../<root_dir>/<lang>/<pq_file_name>.pq
+        output_dir (str): Directory to save the filtered Parquet file.
+        max_ll (int, optional): Maximum allowed line length. Defaults to 600.
+        min_len (int, optional): Minimum allowed file size. Defaults to 50.
+        min_max_ll (int, optional): Minimum allowed maximum line length. Defaults to 25.
+        max_size_kbs (int, optional): Maximum allowed file size in kilobytes. Defaults to 1000.
+        keep_original_index (bool, optional): Whether to keep the original index. Defaults to True.
+        min_alphanum (float, optional): Minimum allowed alphanumerical fraction. Defaults to 0.001.
+        max_alphanum (float, optional): Maximum allowed alphanumerical fraction. Defaults to 0.975.
+        min_ave_ll (int, optional): Minimum allowed average line length. Defaults to 16.
+        min_lines (int, optional): Minimum allowed number of lines. Defaults to 3.
+        is_slim (bool, optional): Whether to apply slim filtering or not. Defaults to True.
 
     Returns:
-        str: The path to the filtered Parquet file.
+        str: Path to the filtered Parquet file.
     """
+    print(f"\nWORKING ON {pq_path} ...")
 
-    # Step 0 - Identify originating directory and create destination directory (if necessary)
+    # Step 0: Identify input directory and create destination directory (if necessary)
     _root_path, _origin_root_dir, _lang, _fname = pq_path.rsplit("/", 3)
     _dest_dir = os.path.join(output_dir, _lang)
     _dest_path = pq_path.replace(_origin_root_dir, output_dir.rsplit("/", 1)[-1])
     if not os.path.isdir(_dest_dir):
         os.makedirs(_dest_dir, exist_ok=True)
 
-    # Step 1 - Load the dataframe from the Parquet file (slim if necessary)
+    # Step 1: Load the DataFrame from the Parquet file (slim if necessary)
     _df = open_pq_as_df(pq_path, is_slim=is_slim)
     print(f"\t--> ORIGINAL LENGTH: {len(_df)}")
 
-    # Step 2 - Filter out rows/files that have a maximum line length that falls outside
-    #          the required range (min_max_ll <= max_ll <= max_line_len)
+    # Step 2: Filter out rows/files with maximum line lengths outside the required range
     filter_flag = ((_df.max_ll <= max_ll) & (_df.max_ll >= min_max_ll))
+    reject_df = _df[~filter_flag].copy()
+    reject_df.loc[:, "reason"] = "max_ll"
     _df = _df[filter_flag]
-    print(f"\t--> AFTER MAX LINE-LENGTH REDUX: {len(_df)}")
+    print(f"\t--> AFTER MAX LINE-LENGTH REDUCTION: {len(_df)}")
 
-    # Step 2.5 - Create a replicate of the original DataFrame to use for rejection analysis
-    reject_df = _df[~filter_flag]
-    reject_df["reason"] = "max_ll"
-
-    # Step 3 - Filter out rows/files that have a size (number of characters) less than `min_len`
+    # Step 3: Filter out rows/files with sizes smaller than `min_len`
     filter_flag = _df.file_size >= min_len
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("file_too_small")
     _df = _df[filter_flag]
-    print(f"\t--> AFTER MIN FILE-SIZE REDUX: {len(_df)}")
+    print(f"\t--> AFTER MIN FILE-SIZE REDUCTION: {len(_df)}")
 
-    # Step 3.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("file_too_small")
-
-    # Step 4 - Filter out rows/files that have a size greater than `max_size_kbs`
+    # Step 4: Filter out rows/files with sizes larger than `max_size_kbs`
     filter_flag = _df.file_size // 1024 <= max_size_kbs
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("file_too_large")
     _df = _df[filter_flag]
-    print(f"\t--> AFTER {max_size_kbs:,} KB MAX SIZE REDUX: {len(_df)}")
+    print(f"\t--> AFTER {max_size_kbs:,} KB MAX SIZE REDUCTION: {len(_df)}")
 
-    # Step 4.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("file_too_large")
-
-    # Step 5 - Filter out rows/files that have an alphanumeric fraction that
-    #          falls outside the required range (min_alphanum, max_alphanum)
+    # Step 5: Filter out rows/files with an alphanumeric fraction outside the required range
     filter_flag = ((_df.alphanum_frac > min_alphanum) & (_df.alphanum_frac < max_alphanum))
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("alphanum_frac")
     _df = _df[filter_flag]
-    print(f"\t--> AFTER ALPHANUMERIC REDUX: {len(_df)}")
+    print(f"\t--> AFTER ALPHANUMERIC REDUCTION: {len(_df)}")
 
-    # Step 5.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("alphanum_frac")
-
-    # Step 6 - Filter out rows/files that have an average line length less than `min_ave_ll`
+    # Step 6: Filter out rows/files with an average line length smaller than `min_ave_ll`
     filter_flag = _df.ave_ll > min_ave_ll
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("ave_ll")
     _df = _df[filter_flag]
-    print(f"\t--> AFTER MIN AVE LL REDUX: {len(_df)}")
+    print(f"\t--> AFTER MIN AVERAGE LINE LENGTH REDUCTION: {len(_df)}")
 
-    # Step 6.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("ave_ll")
-
-    # Step 7 - Filter out rows/files that have fewer than `min_lines` lines
+    # Step 7: Filter out rows/files with fewer than `min_lines` lines
     filter_flag = (_df.file_size / _df.ave_ll) >= min_lines
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("min_lines")
     _df = _df[filter_flag]
-    print(f"\t--> AFTER MIN N-LINES REDUX: {len(_df)}")
+    print(f"\t--> AFTER MIN NUMBER OF LINES REDUCTION: {len(_df)}")
 
-    # Step 7.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("min_lines")
-
-    # Step 8 - Filter out rows/files that are written in Python2
-    filter_flag = ~_df.content.apply(test_source_code_compatible)
+    # Step 8: Filter out rows/files written in Python 2
+    filter_flag = _df.content.apply(test_source_code_compatible)
+    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("python2")
     _df = _df[filter_flag]
+    print(f"\t--> AFTER PYTHON 2 DETECTION REDUCTION: {len(_df)}")
 
-    # Step 8.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
-    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
-    reject_df["reason"] = reject_df["reason"].fillna("python2")
-
-    # Step 9 - Save the filtered dataframe to a Parquet file
+    # Step 9: Save the filtered DataFrame to a Parquet file
     print(f"\t--> SAVING ...\n\t--> `{_dest_path}` ...\n")
-    _df.to_parquet(_dest_path, index=False)
+    _df.to_parquet(_dest_path, index=keep_original_index)
 
-    # Step 9.5 - Save the rejection dataframe to a Parquet file
-    reject_df.to_parquet(_dest_path.replace(".parquet", "_rejects.parquet"), index=False)
+    # Step 9.5: Save the rejection DataFrame to a Parquet file
+    reject_df = reject_df.sort_index()  # sort to reorder according to the original ordering
+    reject_df.to_parquet(_dest_path.replace(".parquet", "_rejects.parquet"), index=keep_original_index)
 
-    # Step 9 - Return to sender
+    # Step 10: Return the path to the filtered Parquet file
     return _dest_path
 
 
