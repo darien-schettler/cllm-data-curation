@@ -2,13 +2,18 @@
 .zst
 .jsonl
 github_data/
+data/
 .tmp/
+dist/
+build/
+
 
 *.bundle.*
 lib/
 node_modules/
 *.egg-info/
 .ipynb_checkpoints
+.ipynb_checkpoints/
 *.tsbuildinfo
 
 # Created by https://www.gitignore.io/api/python
@@ -19,6 +24,8 @@ node_modules/
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.egg-info/
 
 # C extensions
 *.so
