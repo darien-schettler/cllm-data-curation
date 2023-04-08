@@ -62,8 +62,9 @@ def filter_meta_languages(meta_df, top_k=None, mb_size_thresh=None, pq_file_cnt_
 
 
 def filter_parquet_file(pq_path, output_dir,
-                        max_ll=600, min_len=50, min_max_ll=25, max_size_kbs=1_000, keep_original_index=True,
-                        min_alphanum=0.001, max_alphanum=0.975, min_ave_ll=16, min_lines=3, is_slim=True, **kwargs):
+                        max_ll=600, min_len=50, min_max_ll=25, max_size_kbs=1_000, keep_original_index=False,
+                        check_python2=True, min_alphanum=0.001, max_alphanum=0.975, min_ave_ll=16, min_lines=3,
+                        is_slim=True, **kwargs):
     """Filter a Parquet file by applying multiple criteria such as line length, file size,
     number of lines, and alphanumerical fraction.
 
@@ -76,6 +77,7 @@ def filter_parquet_file(pq_path, output_dir,
         min_max_ll (int, optional): Minimum allowed maximum line length. Defaults to 25.
         max_size_kbs (int, optional): Maximum allowed file size in kilobytes. Defaults to 1000.
         keep_original_index (bool, optional): Whether to keep the original index. Defaults to True.
+        check_python2 (bool, optional): Whether to check for Python 2 compatibility. Defaults to True.
         min_alphanum (float, optional): Minimum allowed alphanumerical fraction. Defaults to 0.001.
         max_alphanum (float, optional): Maximum allowed alphanumerical fraction. Defaults to 0.975.
         min_ave_ll (int, optional): Minimum allowed average line length. Defaults to 16.
@@ -90,9 +92,15 @@ def filter_parquet_file(pq_path, output_dir,
     # Step 0: Identify input directory and create destination directory (if necessary)
     _root_path, _origin_root_dir, _lang, _fname = pq_path.rsplit("/", 3)
     _dest_dir = os.path.join(output_dir, _lang)
-    _dest_path = pq_path.replace(_origin_root_dir, output_dir.rsplit("/", 1)[-1])
-    if not os.path.isdir(_dest_dir):
-        os.makedirs(_dest_dir, exist_ok=True)
+    _reject_dir = os.path.join(_dest_dir, "rejects")
+    _reject_path = os.path.join(_reject_dir, _fname)
+    _dest_path = os.path.join(_dest_dir, _fname)
+    # _dest_path = pq_path.replace(_origin_root_dir, output_dir.rsplit("/", 1)[-1])
+
+    if not os.path.isdir(_reject_dir):
+        os.makedirs(_reject_dir, exist_ok=True)
+        if not os.path.isdir(_dest_dir):
+            os.makedirs(_dest_dir, exist_ok=True)
 
     # Step 1: Load the DataFrame from the Parquet file (slim if necessary)
     _df = open_pq_as_df(pq_path, is_slim=is_slim)
@@ -140,12 +148,13 @@ def filter_parquet_file(pq_path, output_dir,
     _df = _df[filter_flag]
     print(f"\t--> AFTER MIN NUMBER OF LINES REDUCTION: {len(_df)}")
 
-    # Step 8: Filter out rows/files written in Python 2
-    filter_flag = _df.content.apply(test_source_code_compatible)
-    reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
-    reject_df.loc[:, "reason"] = reject_df["reason"].fillna("python2")
-    _df = _df[filter_flag]
-    print(f"\t--> AFTER PYTHON 2 DETECTION REDUCTION: {len(_df)}")
+    # Step 8: Filter out rows/files written in Python 2 (OPTIONAL - TIME CONSUMING)
+    if check_python2:
+        filter_flag = _df.content.apply(test_source_code_compatible)
+        reject_df = pd.concat((reject_df, _df[~filter_flag].copy()))
+        reject_df.loc[:, "reason"] = reject_df["reason"].fillna("python2")
+        _df = _df[filter_flag]
+        print(f"\t--> AFTER PYTHON 2 DETECTION REDUCTION: {len(_df)}")
 
     # Step 9: Save the filtered DataFrame to a Parquet file
     print(f"\t--> SAVING ...\n\t--> `{_dest_path}` ...\n")
@@ -153,7 +162,7 @@ def filter_parquet_file(pq_path, output_dir,
 
     # Step 9.5: Save the rejection DataFrame to a Parquet file
     reject_df = reject_df.sort_index()  # sort to reorder according to the original ordering
-    reject_df.to_parquet(_dest_path.replace(".parquet", "_rejects.parquet"), index=keep_original_index)
+    reject_df.to_parquet(_reject_path.replace(".parquet", "_rejects.parquet"), index=keep_original_index)
 
     # Step 10: Return the path to the filtered Parquet file
     return _dest_path
