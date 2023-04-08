@@ -3,6 +3,7 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 import json
+import ast
 import os
 import re
 
@@ -81,6 +82,7 @@ def filter_parquet_file(pq_path, output_dir,
     Returns:
         str: The path to the filtered Parquet file.
     """
+
     # Step 0 - Identify originating directory and create destination directory (if necessary)
     _root_path, _origin_root_dir, _lang, _fname = pq_path.rsplit("/", 3)
     _dest_dir = os.path.join(output_dir, _lang)
@@ -94,33 +96,74 @@ def filter_parquet_file(pq_path, output_dir,
 
     # Step 2 - Filter out rows/files that have a maximum line length that falls outside
     #          the required range (min_max_ll <= max_ll <= max_line_len)
-    _df = _df[((_df.max_ll <= max_ll) & (_df.max_ll >= min_max_ll))]
+    filter_flag = ((_df.max_ll <= max_ll) & (_df.max_ll >= min_max_ll))
+    _df = _df[filter_flag]
     print(f"\t--> AFTER MAX LINE-LENGTH REDUX: {len(_df)}")
 
+    # Step 2.5 - Create a replicate of the original DataFrame to use for rejection analysis
+    reject_df = _df[~filter_flag]
+    reject_df["reason"] = "max_ll"
+
     # Step 3 - Filter out rows/files that have a size (number of characters) less than `min_len`
-    _df = _df[_df.file_size >= min_len]
+    filter_flag = _df.file_size >= min_len
+    _df = _df[filter_flag]
     print(f"\t--> AFTER MIN FILE-SIZE REDUX: {len(_df)}")
 
+    # Step 3.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("file_too_small")
+
     # Step 4 - Filter out rows/files that have a size greater than `max_size_kbs`
-    _df = _df[_df.file_size // (1024 ** 2) <= max_size_kbs]
+    filter_flag = _df.file_size // 1024 <= max_size_kbs
+    _df = _df[filter_flag]
     print(f"\t--> AFTER {max_size_kbs:,} KB MAX SIZE REDUX: {len(_df)}")
+
+    # Step 4.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("file_too_large")
 
     # Step 5 - Filter out rows/files that have an alphanumeric fraction that
     #          falls outside the required range (min_alphanum, max_alphanum)
-    _df = _df[((_df.alphanum_frac > min_alphanum) & (_df.alphanum_frac < max_alphanum))]
+    filter_flag = ((_df.alphanum_frac > min_alphanum) & (_df.alphanum_frac < max_alphanum))
+    _df = _df[filter_flag]
     print(f"\t--> AFTER ALPHANUMERIC REDUX: {len(_df)}")
 
+    # Step 5.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("alphanum_frac")
+
     # Step 6 - Filter out rows/files that have an average line length less than `min_ave_ll`
-    _df = _df[_df.ave_ll > min_ave_ll]
+    filter_flag = _df.ave_ll > min_ave_ll
+    _df = _df[filter_flag]
     print(f"\t--> AFTER MIN AVE LL REDUX: {len(_df)}")
 
+    # Step 6.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("ave_ll")
+
     # Step 7 - Filter out rows/files that have fewer than `min_lines` lines
-    _df = _df[(_df.file_size / _df.ave_ll) >= min_lines]
+    filter_flag = (_df.file_size / _df.ave_ll) >= min_lines
+    _df = _df[filter_flag]
     print(f"\t--> AFTER MIN N-LINES REDUX: {len(_df)}")
 
-    # Step 8 - Save the filtered dataframe to a Parquet file
+    # Step 7.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("min_lines")
+
+    # Step 8 - Filter out rows/files that are written in Python2
+    filter_flag = ~_df.content.apply(test_source_code_compatible)
+    _df = _df[filter_flag]
+
+    # Step 8.5 - Add rejected rows/files to the rejection DataFrame. Join on index to preserve order.
+    reject_df = pd.concat((reject_df, _df[~filter_flag])).sort_index()
+    reject_df["reason"] = reject_df["reason"].fillna("python2")
+
+    # Step 9 - Save the filtered dataframe to a Parquet file
     print(f"\t--> SAVING ...\n\t--> `{_dest_path}` ...\n")
     _df.to_parquet(_dest_path, index=False)
+
+    # Step 9.5 - Save the rejection dataframe to a Parquet file
+    reject_df.to_parquet(_dest_path.replace(".parquet", "_rejects.parquet"), index=False)
 
     # Step 9 - Return to sender
     return _dest_path
@@ -224,7 +267,7 @@ def glob_pq_paths(root_dir):
         if len(_path_list) > _thresh:
             return True
 
-    pattern_checks = [("**", "*.parquet"), ("*.parquet"), ("**", "**", "*.parquet")]
+    pattern_checks = [("**", "*.parquet"), ("*.parquet",), ("**", "**", "*.parquet")]
     for pattern in pattern_checks:
         pq_paths = glob(os.path.join(root_dir, *pattern))
         if __check_capture(pq_paths):
@@ -292,6 +335,32 @@ def contains_repeating_substring(input_string, substring, n):
 
     # Check if the pattern is found in the input string and return flag
     return bool(re.search(pattern, input_string))
+
+
+def test_source_code_compatible(input_string):
+    """
+    Test if the input source code is compatible with the current Python version.
+    This function has some limitations:
+    - It will only test compatibility with the Python version you are running.
+    - It won't differentiate between syntax errors and incompatibilities.
+
+    Args:
+        code_data (str): The source code to test compatibility.
+
+    Returns:
+        bool: If incompatible, returns False else True
+    """
+    try:
+        # Try to parse the source code as an Abstract Syntax Tree (AST)
+        # If it succeeds, the code is compatible with the current Python version
+        _ = ast.parse(input_string)
+        return True
+    except SyntaxError as exc:
+        # If a SyntaxError occurs, it means the code is not compatible with the current Python version
+        return False
+    except ValueError as exc:
+        # If a ValueError occurs, it means there is an issue with the input and the code is not compatible
+        return False
 
 
 ####################################################################################################
